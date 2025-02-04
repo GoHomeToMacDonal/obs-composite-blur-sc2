@@ -22,6 +22,8 @@ struct obs_source_info obs_composite_blur = {
 	.get_properties = composite_blur_properties,
 	.get_defaults = composite_blur_defaults};
 
+int getRGBAFromStageSurface(composite_blur_filter_data_t *filter);
+
 static const char *composite_blur_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -577,6 +579,44 @@ static void draw_output_to_source(composite_blur_filter_data_t *filter)
 	gs_blend_state_pop();
 }
 
+static void draw_output_to_source_unchanged(composite_blur_filter_data_t *filter)
+{
+	const enum gs_color_space preferred_spaces[] = {
+		GS_CS_SRGB,
+		GS_CS_SRGB_16F,
+		GS_CS_709_EXTENDED,
+	};
+
+	const enum gs_color_space source_space = obs_source_get_color_space(
+		obs_filter_get_target(filter->context),
+		OBS_COUNTOF(preferred_spaces), preferred_spaces);
+
+	const enum gs_color_format format =
+		gs_get_format_from_space(source_space);
+
+	if (!obs_source_process_filter_begin_with_color_space(
+		    filter->context, format, source_space,
+		    OBS_ALLOW_DIRECT_RENDERING)) {
+		return;
+	}
+
+	gs_texture_t *texture =
+		gs_texrender_get_texture(filter->input_texrender);
+	gs_effect_t *pass_through = filter->output_effect;
+
+	if (filter->param_output_image) {
+		gs_effect_set_texture(filter->param_output_image, texture);
+	}
+
+	gs_blend_state_push();
+	gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA,
+				   GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+	obs_source_process_filter_end(filter->context, pass_through,
+				      filter->width, filter->height);
+	gs_blend_state_pop();
+}
+
 static void composite_blur_video_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -603,13 +643,17 @@ static void composite_blur_video_render(void *data, gs_effect_t *effect)
 		filter->video_render(filter);
 
 		// 3. Apply mask to texture if one is selected by the user.
-		if (filter->mask_type != EFFECT_MASK_TYPE_NONE) {
+		if ((filter->mask_type != EFFECT_MASK_TYPE_NONE)) {
 			// Swap output and render
 			apply_effect_mask(filter);
 		}
 
 		// 4. Draw result (filter->output_texrender) to source
-		draw_output_to_source(filter);
+		if (!getRGBAFromStageSurface(filter)) {
+			draw_output_to_source(filter);
+		} else {
+			draw_output_to_source_unchanged(filter);
+		}
 		filter->rendered = true;
 	}
 
@@ -850,6 +894,52 @@ static void apply_effect_mask_rect(composite_blur_filter_data_t *filter)
 	}
 	texture = gs_texrender_get_texture(filter->output_texrender);
 	gs_blend_state_pop();
+}
+
+int getRGBAFromStageSurface(composite_blur_filter_data_t *filter)
+{
+	auto width = filter->width;
+	auto height = filter->height;
+
+	if (filter->stagesurface) {
+		uint32_t stagesurf_width =
+			gs_stagesurface_get_width(filter->stagesurface);
+		uint32_t stagesurf_height =
+			gs_stagesurface_get_height(filter->stagesurface);
+		if (stagesurf_width != width || stagesurf_height != height) {
+			gs_stagesurface_destroy(filter->stagesurface);
+			filter->stagesurface = NULL;
+		}
+	}
+	if (!filter->stagesurface) {
+		filter->stagesurface =
+			gs_stagesurface_create(width, height, GS_RGBA);
+	}
+	gs_stage_texture(filter->stagesurface,
+			 gs_texrender_get_texture(filter->input_texrender));
+	uint8_t *video_data;
+	uint32_t linesize;
+	if (!gs_stagesurface_map(filter->stagesurface, &video_data,
+				 &linesize)) {
+		return 0;
+	}
+
+	int pixel_cnt = 0;
+	float pixel_sum = 0.0f;
+	for (int i = height - 75; i < height - 50; i++) {
+		for (int j = width / 4 + 25; j < width / 4 + 50; j++) {
+			uint8_t *pixel = video_data + i * linesize + j * 4;
+			pixel_sum += pixel[0];
+			pixel_sum += pixel[1];
+			pixel_sum += pixel[2];
+			//pixel_sum += pixel[3];
+			pixel_cnt += 3;
+		}
+	}
+	gs_stagesurface_unmap(filter->stagesurface);
+	blog(LOG_INFO, "pixel_sum: %f, pixel_cnt: %d, avg: %f, linesize: %d, height: %d, width: %d", pixel_sum,
+	     pixel_cnt, pixel_sum / pixel_cnt, linesize, height, width);
+	return pixel_sum / pixel_cnt < 10;
 }
 
 static void apply_effect_mask_crop(composite_blur_filter_data_t *filter)
