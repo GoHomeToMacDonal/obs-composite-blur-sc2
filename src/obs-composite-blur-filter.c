@@ -939,7 +939,7 @@ int getRGBAFromStageSurface(composite_blur_filter_data_t *filter)
 	gs_stagesurface_unmap(filter->stagesurface);
 	blog(LOG_INFO, "pixel_sum: %f, pixel_cnt: %d, avg: %f, linesize: %d, height: %d, width: %d", pixel_sum,
 	     pixel_cnt, pixel_sum / pixel_cnt, linesize, height, width);
-	return pixel_sum / pixel_cnt < 10;
+	return (pixel_sum / pixel_cnt < 10) || (pixel_sum / pixel_cnt >= 35);
 }
 
 static void apply_effect_mask_crop(composite_blur_filter_data_t *filter)

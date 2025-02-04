@@ -260,6 +260,9 @@ struct composite_blur_filter_data {
 	void (*video_render)(composite_blur_filter_data_t *filter);
 	void (*load_effect)(composite_blur_filter_data_t *filter);
 	void (*update)(composite_blur_filter_data_t *filter);
+	
+	// Extra
+	gs_stagesurf_t *stagesurface;
 };
 
 static const char *composite_blur_name(void *type_data);
